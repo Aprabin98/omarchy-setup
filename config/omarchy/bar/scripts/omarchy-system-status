@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+read_cpu() {
+  awk '/^cpu / { user=$2; nice=$3; sys=$4; idle=$5; iowait=$6; irq=$7; softirq=$8; steal=$9; total=user+nice+sys+idle+iowait+irq+softirq+steal; idle=idle+iowait; print total, idle; exit }' /proc/stat
+}
+
+read -r total1 idle1 < <(read_cpu)
+sleep 0.5
+read -r total2 idle2 < <(read_cpu)
+period=$((total2 - total1))
+cpu_percent=0
+if (( period > 0 )); then
+  cpu_percent=$(((period - (idle2 - idle1)) * 100 / period))
+fi
+
+cpu_model=$(awk -F ': ' '/model name/ {print $2; exit}' /proc/cpuinfo)
+cpu_threads=$(nproc 2>/dev/null || printf 'unknown')
+cpu_temp="unavailable"
+ssd_temp="unavailable"
+if command -v sensors >/dev/null 2>&1; then
+  sensor_values=$(sensors 2>/dev/null || true)
+  cpu_temp=$(awk '/Package id 0:/ {print $4; exit}' <<< "$sensor_values")
+  ssd_temp=$(awk '/Composite:/ {print $2; exit}' <<< "$sensor_values")
+  cpu_temp=${cpu_temp:-unavailable}
+  ssd_temp=${ssd_temp:-unavailable}
+fi
+
+read -r memory_used memory_total memory_percent < <(free -b | awk '/^Mem:/ {printf "%.1f %.1f %d\n", $3/1073741824, $2/1073741824, $3*100/$2}')
+read -r swap_used swap_total < <(free -b | awk '/^Swap:/ {printf "%.1f %.1f\n", $3/1073741824, $2/1073741824}')
+
+gpu_name="GPU unavailable"
+gpu_percent="unavailable"
+gpu_frequency="unavailable"
+gpu_temp="unavailable"
+for device in /sys/class/drm/card[0-9]/device; do
+  [[ -e "$device/vendor" ]] || continue
+  read -r vendor < "$device/vendor" || true
+  case "${vendor:-}" in
+    0x8086) gpu_name="Intel graphics" ;;
+    0x10de) gpu_name="NVIDIA graphics" ;;
+    0x1002) gpu_name="AMD graphics" ;;
+    *) gpu_name="Graphics device" ;;
+  esac
+  for busy in "$device/gpu_busy_percent" "$device/gt_busy_percent"; do
+    if [[ -r "$busy" ]]; then
+      read -r value < "$busy" || true
+      [[ "${value:-}" =~ ^[0-9]+$ ]] && gpu_percent="${value}%"
+      break
+    fi
+  done
+  for frequency in "$device/gt_cur_freq_mhz" "$device/gt/gt0/rps_cur_freq_mhz"; do
+    if [[ -r "$frequency" ]]; then
+      read -r value < "$frequency" || true
+      [[ "${value:-}" =~ ^[0-9]+$ ]] && gpu_frequency="${value} MHz"
+      break
+    fi
+  done
+  for namefile in "$device"/hwmon/hwmon*/name; do
+    [[ -r "$namefile" ]] || continue
+    read -r hwmon_name < "$namefile" || true
+    case "${hwmon_name:-}" in
+      i915|amdgpu|nouveau|nvidia*)
+        for tempfile in "${namefile%/name}"/temp*_input; do
+          [[ -r "$tempfile" ]] || continue
+          read -r milli < "$tempfile" || true
+          if [[ "${milli:-}" =~ ^[0-9]+$ ]]; then
+            gpu_temp="$((milli / 1000))°C"
+            break 2
+          fi
+        done
+        ;;
+    esac
+  done
+  break
+done
+
+disk_used=$(df -h / | awk 'NR==2 {printf "%s / %s", $3, $2}')
+disk_percent=$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')
+uptime=$(uptime -p 2>/dev/null | sed 's/^up //')
+battery="unavailable"
+for capacity in /sys/class/power_supply/BAT*/capacity; do
+  if [[ -r "$capacity" ]]; then
+    read -r percent < "$capacity" || true
+    battery="${percent:-?}%"
+    break
+  fi
+done
+
+stats=$(printf 'cpu_percent=%s\ncpu_model=%s\ncpu_threads=%s\ncpu_temp=%s\nssd_temp=%s\nmemory_used=%.1f GiB\nmemory_total=%.1f GiB\nmemory_percent=%s\nswap_used=%.1f GiB\nswap_total=%.1f GiB\ngpu_name=%s\ngpu_percent=%s\ngpu_frequency=%s\ngpu_temp=%s\ndisk_used=%s\ndisk_percent=%s\nbattery=%s\nuptime=%s\nkernel=%s' \
+  "$cpu_percent" "$cpu_model" "$cpu_threads" "$cpu_temp" "$ssd_temp" \
+  "$memory_used" "$memory_total" "$memory_percent" "$swap_used" "$swap_total" \
+  "$gpu_name" "$gpu_percent" "$gpu_frequency" "$gpu_temp" \
+  "$disk_used" "$disk_percent" "$battery" "$uptime" "$(uname -r)")
+
+if [[ "${1:-}" == "--stats" ]]; then
+  printf '%s\n' "$stats"
+else
+  tooltip=$(printf 'CPU %s%% · %s\nGPU %s · %s\nRAM %s%% · %s / %s\nDisk %s%% · %s\nTemp CPU %s / GPU %s · SSD %s\nBattery %s · Uptime %s' \
+    "$cpu_percent" "$cpu_model" "$gpu_percent" "$gpu_frequency" \
+    "$memory_percent" "$memory_used" "$memory_total" "$disk_percent" "$disk_used" \
+    "$cpu_temp" "$gpu_temp" "$ssd_temp" "$battery" "$uptime")
+  printf '{"text":"󰍛","tooltip":"%s"}\n' "$(printf '%s' "$tooltip" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g')"
+fi

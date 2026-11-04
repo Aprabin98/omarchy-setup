@@ -1,0 +1,380 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd -P)"
+HOME_DIR="$(CDPATH= cd -- "$HOME" && pwd -P)"
+STATE_HOME="${XDG_STATE_HOME:-$HOME_DIR/.local/state}"
+STATE="$STATE_HOME/omarchy-setup"
+REGISTRY="$STATE/installed.tsv"
+BACKUP_ROOT="$STATE/backups"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+NEW_REGISTRY=""
+CREATED=()
+ACTION=""
+SELECTED_COMPONENTS=()
+
+rollback_install() {
+  [[ -n "$NEW_REGISTRY" && -f "$NEW_REGISTRY" ]] || return 0
+  local src rel backup kind digest changed rollback_backup dest
+  while IFS=$'\t' read -r src rel backup kind digest changed rollback_backup; do
+    [[ -n "$rel" ]] || continue
+    [[ "$changed" == 1 ]] || continue
+    dest="$HOME_DIR/$rel"
+    if [[ "$kind" == copy ]]; then
+      if [[ -f "$dest" && "$(sha256sum "$dest" | cut -d ' ' -f1)" == "$digest" ]]; then rm -- "$dest"; fi
+      if [[ "$rollback_backup" != "-" && -e "$rollback_backup" ]]; then
+        mkdir -p -- "$(dirname -- "$dest")"
+        mv -- "$rollback_backup" "$dest"
+        continue
+      fi
+    elif [[ -L "$dest" && "$(readlink "$dest")" == "$src" ]]; then
+      rm -- "$dest"
+    fi
+    if [[ "$backup" != "-" && ( -e "$backup" || -L "$backup" ) ]]; then
+      mkdir -p -- "$(dirname -- "$dest")"
+      mv -- "$backup" "$dest"
+    fi
+  done < <(tac "$NEW_REGISTRY")
+  rm -f -- "$NEW_REGISTRY"
+  NEW_REGISTRY=""
+}
+
+die() {
+  printf 'omarchy-setup: %s\n' "$*" >&2
+  rollback_install
+  exit 1
+}
+note() { printf 'omarchy-setup: %s\n' "$*"; }
+
+on_error() {
+  local status=$?
+  rollback_install
+  printf 'omarchy-setup: stopped after an error (status %s); existing files were restored where possible.\n' "$status" >&2
+  exit "$status"
+}
+trap on_error ERR
+
+usage() {
+  cat <<'EOF'
+Usage: omarchy-setup <command> [component...]
+
+Commands:
+  install [components...]  Install all or selected components
+  update [components...]   Update Git, then apply all or selected components
+  status [components...]   Show all or selected installed components
+  remove [components...]   Remove selected components and restore backups
+  uninstall                Remove all managed components, keeping this checkout
+
+Components:
+  all (default)            Everything; optional host profile when selected
+  hypr                     Hyprland config and its launcher binding/command
+  omarchy                  Omarchy bar, shell config, and plugins
+  music                    Alias for omarchy; includes its bar integration
+  launcher                 Launcher preferences, binding, and command
+  vice-city-radial         Alias for launcher
+  terminals                Alacritty, Foot, Ghostty, and Kitty configs
+  alacritty | foot | ghostty | kitty
+  config:<path>            One file or directory under config/, e.g. config:hypr/input.lua
+  host                     Current machine profile (set OMARCHY_SETUP_HOST)
+
+Multiple components can be selected, e.g. `install hypr terminals`.
+EOF
+}
+
+select_components() {
+  local component
+  SELECTED_COMPONENTS=()
+  if [[ $# -eq 0 ]]; then
+    SELECTED_COMPONENTS=(all)
+    return
+  fi
+  for component in "$@"; do
+    case "$component" in
+      all|hypr|omarchy|omarchy-shell|music|launcher|omarchy-launcher|vice-city-radial|terminals|terminal|alacritty|foot|ghostty|kitty|host) ;;
+      config:*)
+        local config_path="${component#config:}"
+        [[ -n "$config_path" && "$config_path" != /* && "$config_path" != *..* && -e "$ROOT/config/$config_path" ]] || die "unknown config path '$config_path' under config/"
+        ;;
+      *) die "unknown component '$component' (run './install.sh help' for choices)" ;;
+    esac
+    case "$component" in
+      omarchy|omarchy-shell|music) component="omarchy-shell" ;;
+      launcher|omarchy-launcher|vice-city-radial) component="launcher" ;;
+      terminal) component="terminals" ;;
+    esac
+    if [[ "$component" == all ]]; then
+      SELECTED_COMPONENTS=(all)
+      return
+    fi
+    local found=0 existing
+    for existing in "${SELECTED_COMPONENTS[@]}"; do
+      [[ "$existing" == "$component" ]] && found=1
+    done
+    [[ "$found" == 1 ]] || SELECTED_COMPONENTS+=("$component")
+  done
+}
+
+component_matches() {
+  local rel="$1" component
+  for component in "${SELECTED_COMPONENTS[@]}"; do
+    case "$component" in
+      all)
+        if [[ "$ACTION" == install || "$ACTION" == update ]] && [[ -z "${OMARCHY_SETUP_HOST:-}" ]] &&
+           [[ "$rel" == .config/hypr/monitors.lua || "$rel" == .local/bin/omarchy-hdmi-audio-switch.py || "$rel" == .config/systemd/user/omarchy-hdmi-audio-switch.service ]]; then
+          continue
+        fi
+        return 0
+        ;;
+      hypr)
+        [[ "$rel" == .config/hypr/* || "$rel" == .local/bin/omarchy-launcher ]] && return 0
+        ;;
+      omarchy-shell)
+        [[ "$rel" == .config/omarchy/* ]] && return 0
+        ;;
+      launcher)
+        [[ "$rel" == .config/omarchy-launcher/* || "$rel" == .config/hypr/bindings.lua || "$rel" == .local/bin/omarchy-launcher ]] && return 0
+        ;;
+      terminals)
+        [[ "$rel" == .config/alacritty/* || "$rel" == .config/foot/* || "$rel" == .config/ghostty/* || "$rel" == .config/kitty/* ]] && return 0
+        ;;
+      alacritty|foot|ghostty|kitty)
+        [[ "$rel" == ".config/$component/"* ]] && return 0
+        ;;
+      host)
+        [[ "$rel" == .config/hypr/monitors.lua || "$rel" == .local/bin/omarchy-hdmi-audio-switch.py || "$rel" == .config/systemd/user/omarchy-hdmi-audio-switch.service ]] && return 0
+        ;;
+      config:*)
+        local config_path="${component#config:}"
+        [[ "$rel" == ".config/$config_path" || "$rel" == ".config/$config_path/"* ]] && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+host_selected() {
+  local component
+  for component in "${SELECTED_COMPONENTS[@]}"; do
+    [[ "$component" == host ]] && return 0
+  done
+  [[ "${SELECTED_COMPONENTS[*]}" == all && -n "${OMARCHY_SETUP_HOST:-}" ]]
+}
+
+require_layout() {
+  [[ -d "$ROOT/dotfiles/.config" ]] || die "missing dotfiles/.config in $ROOT"
+  [[ -d "$ROOT/projects/vice-city-radial" ]] || die "missing launcher project"
+  [[ -d "$ROOT/projects/youtube-music" ]] || die "missing YouTube Music project"
+}
+
+add_link() {
+  local src="$1" rel="$2" dest backup="-" old_src old_rel old_backup
+  dest="$HOME_DIR/$rel"
+  [[ -f "$src" ]] || die "managed source is missing: $src"
+  mkdir -p -- "$(dirname -- "$dest")"
+  if [[ -L "$dest" && "$(readlink "$dest")" == "$src" ]]; then
+    if [[ -f "$REGISTRY" ]]; then
+      while IFS=$'\t' read -r old_src old_rel old_backup _; do
+        if [[ "$old_src" == "$src" && "$old_rel" == "$rel" ]]; then
+          backup="$old_backup"
+          break
+        fi
+      done < "$REGISTRY"
+    fi
+    printf '%s\t%s\t%s\tlink\t-\t0\t-\n' "$src" "$rel" "$backup" >> "$NEW_REGISTRY"
+    return
+  fi
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    backup="$BACKUP_ROOT/$STAMP/$rel"
+    mkdir -p -- "$(dirname -- "$backup")"
+    mv -- "$dest" "$backup"
+    note "saved existing $rel at ${backup#"$HOME_DIR/"}"
+  fi
+  printf '%s\t%s\t%s\tlink\t-\t1\t-\n' "$src" "$rel" "$backup" >> "$NEW_REGISTRY"
+  ln -s -- "$src" "$dest"
+}
+
+add_copy() {
+  local src="$1" rel="$2" dest digest backup="-" old_src old_rel old_backup old_kind old_digest managed_existing=0 rollback_backup="-"
+  dest="$HOME_DIR/$rel"
+  [[ -f "$src" ]] || die "managed source is missing: $src"
+  digest="$(sha256sum "$src" | cut -d ' ' -f1)"
+  mkdir -p -- "$(dirname -- "$dest")"
+  if [[ -f "$dest" && ! -L "$dest" && "$(sha256sum "$dest" | cut -d ' ' -f1)" == "$digest" ]]; then
+    backup="-"
+    if [[ -f "$REGISTRY" ]]; then
+      while IFS=$'\t' read -r old_src old_rel old_backup old_kind old_digest _; do
+        if [[ "$old_rel" == "$rel" ]]; then backup="$old_backup"; break; fi
+      done < "$REGISTRY"
+    fi
+    printf '%s\t%s\t%s\tcopy\t%s\t0\t-\n' "$src" "$rel" "$backup" "$digest" >> "$NEW_REGISTRY"
+    return
+  fi
+  if [[ -f "$REGISTRY" ]]; then
+    while IFS=$'\t' read -r old_src old_rel old_backup old_kind old_digest _; do
+      if [[ "$old_rel" == "$rel" ]]; then
+        backup="$old_backup"
+        if [[ -e "$dest" || -L "$dest" ]]; then
+          if [[ "$old_kind" == copy && -f "$dest" && ! -L "$dest" && "$(sha256sum "$dest" | cut -d ' ' -f1)" == "$old_digest" ]]; then
+            managed_existing=1
+          elif [[ "$old_kind" == copy && -f "$dest" && ! -L "$dest" ]]; then
+            backup="$BACKUP_ROOT/$STAMP/$rel"
+          elif [[ "$old_kind" != copy && ! ( -L "$dest" && "$(readlink "$dest")" == "$old_src" ) ]]; then
+            backup="$BACKUP_ROOT/$STAMP/$rel"
+          elif [[ "$old_kind" != copy && -L "$dest" && "$(readlink "$dest")" == "$old_src" ]]; then
+            managed_existing=1
+          fi
+        fi
+        break
+      fi
+    done < "$REGISTRY"
+  fi
+  if [[ ( -e "$dest" || -L "$dest" ) && "$managed_existing" == 1 ]]; then
+    rollback_backup="$STATE/updates/$STAMP/$rel"
+    mkdir -p -- "$(dirname -- "$rollback_backup")"
+    mv -- "$dest" "$rollback_backup"
+  elif [[ ( -e "$dest" || -L "$dest" ) && "$managed_existing" == 0 ]]; then
+    if [[ "$backup" == "-" || "$backup" != "$BACKUP_ROOT/$STAMP/$rel" ]]; then backup="$BACKUP_ROOT/$STAMP/$rel"; fi
+    if [[ "$backup" == "$BACKUP_ROOT/$STAMP/$rel" ]]; then
+      mkdir -p -- "$(dirname -- "$backup")"
+      mv -- "$dest" "$backup"
+      note "saved existing $rel at ${backup#"$HOME_DIR/"}"
+    fi
+  fi
+  printf '%s\t%s\t%s\tcopy\t%s\t1\t%s\n' "$src" "$rel" "$backup" "$digest" "$rollback_backup" >> "$NEW_REGISTRY"
+  local temp="$dest.omarchy-setup.tmp.$$"
+  cp -p -- "$src" "$temp"
+  mv -f -- "$temp" "$dest"
+}
+
+install_setup() {
+  require_layout
+  command -v ln >/dev/null || die "ln is required"
+  if host_selected && [[ -z "${OMARCHY_SETUP_HOST:-}" ]]; then
+    die "set OMARCHY_SETUP_HOST to install a host profile"
+  fi
+  if host_selected && [[ ! -f "$ROOT/hosts/$OMARCHY_SETUP_HOST/monitors.lua" ]]; then
+    die "unknown host profile: $OMARCHY_SETUP_HOST"
+  fi
+  mkdir -p -- "$STATE" "$BACKUP_ROOT"
+  NEW_REGISTRY="$(mktemp "$STATE/installed.XXXXXX")"
+  if [[ -f "$REGISTRY" ]]; then
+    local old_line old_src old_rel
+    while IFS= read -r old_line; do
+      IFS=$'\t' read -r old_src old_rel old_backup old_kind old_digest old_changed old_rollback <<< "$old_line"
+      if ! component_matches "$old_rel" || [[ "$old_rel" == .local/bin/omarchy-setup ]]; then
+        printf '%s\n' "$old_line" >> "$NEW_REGISTRY"
+      fi
+    done < "$REGISTRY"
+  fi
+  while IFS= read -r -d '' src; do
+    rel="${src#"$ROOT/dotfiles/"}"
+    if ! component_matches "$rel"; then
+      continue
+    fi
+    if host_selected && [[ "$rel" == .config/hypr/monitors.lua ]]; then
+      continue
+    fi
+    case "$rel" in
+      .config/omarchy/plugins/damir.ytmusic/*)
+        add_copy "$ROOT/projects/youtube-music/${rel#".config/omarchy/plugins/damir.ytmusic/"}" "$rel"
+        ;;
+      *) add_link "$src" "$rel" ;;
+    esac
+  done < <(find -L "$ROOT/dotfiles" -type f -print0 | sort -z)
+  if host_selected; then
+    add_link "$ROOT/hosts/$OMARCHY_SETUP_HOST/monitors.lua" ".config/hypr/monitors.lua"
+    add_link "$ROOT/hosts/$OMARCHY_SETUP_HOST/omarchy-hdmi-audio-switch.py" ".local/bin/omarchy-hdmi-audio-switch.py"
+    add_link "$ROOT/hosts/$OMARCHY_SETUP_HOST/omarchy-hdmi-audio-switch.service" ".config/systemd/user/omarchy-hdmi-audio-switch.service"
+    if command -v systemctl >/dev/null && ! systemctl --user daemon-reload; then
+      note "could not reload the user systemd manager; run 'systemctl --user daemon-reload' in your desktop session"
+    fi
+  fi
+  if component_matches .local/bin/omarchy-launcher; then
+    add_link "$ROOT/projects/vice-city-radial/omarchy-launcher" ".local/bin/omarchy-launcher"
+  fi
+  add_link "$ROOT/bin/omarchy-setup" ".local/bin/omarchy-setup"
+  mv -f -- "$NEW_REGISTRY" "$REGISTRY"
+  NEW_REGISTRY=""
+  note "installed from $ROOT"
+  note "your changes under this checkout are live; use './bin/omarchy-setup update' after pulling changes"
+}
+
+update_setup() {
+  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+    [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || die "commit or stash local changes before updating from the remote"
+    git -C "$ROOT" pull --ff-only
+  fi
+  install_setup
+}
+
+status_setup() {
+  [[ -f "$REGISTRY" ]] || { note "not installed"; return 0; }
+  local src rel backup kind digest changed dest broken=0
+  while IFS=$'\t' read -r src rel backup kind digest changed; do
+    [[ -n "$rel" ]] || continue
+    component_matches "$rel" || continue
+    dest="$HOME_DIR/$rel"
+    if [[ "${kind:-link}" == copy && -f "$dest" && ! -L "$dest" && "$(sha256sum "$dest" | cut -d ' ' -f1)" == "$digest" ]]; then
+      printf 'copied  %s\n' "$rel"
+    elif [[ "${kind:-link}" != copy && -L "$dest" && "$(readlink "$dest")" == "$src" ]]; then
+      printf 'linked  %s\n' "$rel"
+    elif [[ -L "$dest" ]]; then
+      printf 'changed %s -> %s\n' "$rel" "$(readlink "$dest")"
+      broken=1
+    else
+      printf 'missing %s\n' "$rel"
+      broken=1
+    fi
+  done < "$REGISTRY"
+  return "$broken"
+}
+
+remove_setup() {
+  [[ -f "$REGISTRY" ]] || { note "nothing installed"; return 0; }
+  local tmp="$REGISTRY.remove.$$" src rel backup kind digest changed rollback_backup dest removed=0 line
+  tac "$REGISTRY" > "$tmp"
+  local kept="$tmp.kept"
+  : > "$kept"
+  while IFS= read -r line; do
+    IFS=$'\t' read -r src rel backup kind digest changed rollback_backup <<< "$line"
+    [[ -n "$rel" ]] || continue
+    if ! component_matches "$rel"; then
+      printf '%s\n' "$line" >> "$kept"
+      continue
+    fi
+    removed=1
+    dest="$HOME_DIR/$rel"
+    if [[ "${kind:-link}" == copy && -f "$dest" && ! -L "$dest" && "$(sha256sum "$dest" | cut -d ' ' -f1)" == "$digest" ]]; then
+      rm -- "$dest"
+    elif [[ "${kind:-link}" != copy && -L "$dest" && "$(readlink "$dest")" == "$src" ]]; then
+      rm -- "$dest"
+    elif [[ -e "$dest" || -L "$dest" ]]; then
+      note "kept user-modified path $rel"
+      printf '%s\n' "$line" >> "$kept"
+      continue
+    fi
+    if [[ "$backup" != "-" && ( -e "$backup" || -L "$backup" ) ]]; then
+      mkdir -p -- "$(dirname -- "$dest")"
+      mv -- "$backup" "$dest"
+      note "restored $rel"
+    fi
+  done < "$tmp"
+  if [[ -s "$kept" ]]; then mv -f -- "$kept" "$REGISTRY"; else rm -f -- "$kept" "$REGISTRY"; fi
+  rm -f -- "$tmp"
+  if [[ "$removed" == 1 ]]; then note "removed selected components; checkout and backups remain"; else note "no matching installed components"; fi
+}
+
+command_name="${1:-}"
+ACTION="$command_name"
+shift || true
+if [[ "$command_name" == uninstall ]]; then set --; fi
+select_components "$@"
+case "$command_name" in
+  install) install_setup ;;
+  update) update_setup ;;
+  status) status_setup ;;
+  remove|uninstall) remove_setup ;;
+  -h|--help|help|'') usage ;;
+  *) usage >&2; die "unknown command: $command_name" ;;
+esac

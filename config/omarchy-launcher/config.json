@@ -1,0 +1,11 @@
+{
+  "pinned": [],
+  "radius": 238,
+  "iconSize": 44,
+  "animationMs": 110,
+  "mouseNavigation": true,
+  "keyboardNavigation": true,
+  "colors": {},
+  "pageSize": 12,
+  "iconFont": "JetBrainsMono Nerd Font"
+}

@@ -1,0 +1,15 @@
+**/.git/
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/node_modules/
+**/.env
+**/.env.*
+**/account.json
+**/browser.json
+**/cookies.txt
+**/session.json
+**/*.machine-id
+*.bak
+*.bak.*
+*.before-*

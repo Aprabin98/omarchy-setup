@@ -1,0 +1,12 @@
+[Unit]
+Description=Switch audio between HDMI monitor and laptop speakers
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omarchy-hdmi-audio-switch.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -150,6 +150,20 @@ ShellRoot {
   }
 
   // ---------- search ----------
+  // Results are grouped by source so every query ranks apps first, then open
+  // windows, then app settings/management, then the rest of the system. Match
+  // quality still orders entries inside each group, and fuzzy-only matches
+  // never outrank a direct match, so an unrelated fuzzy hit cannot jump ahead
+  // of an exact result such as "Lock".
+  function searchBand(s) { return s > 20 ? 0 : 1 }
+  function searchTier(e) {
+    if (!e) return 3
+    if (e.type === "app") return 0
+    if (e.type === "win") return 1
+    const category = String(e.id || "").split(".")[0]
+    if (category === "setup" || category === "install" || category === "remove") return 2
+    return 3
+  }
   function updateSearch() {
     const q = query.trim()
     if (!q) { searchCache = []; return }
@@ -158,7 +172,7 @@ ShellRoot {
       const l = leafCache[i]
       const extra = l.it.description + " " + l.it.aliases.join(" ") + " " + l.it.searchTerms.join(" ")
       const s = Menu.scoreAll(q, l.it.label, l.path, extra)
-      if (s) { const e = entryFromItem(l.it); e.sub = l.path; scored.push({ s: s + 1, e: e }) }
+      if (s) { const e = entryFromItem(l.it); e.sub = l.path; scored.push({ s: s, e: e }) }
     }
     const apps = sortedApps()
     for (let i = 0; i < apps.length; i++) {
@@ -171,9 +185,15 @@ ShellRoot {
       if (!win || !win.wayland || !windowTitle(win).length) continue
       if (windowAppId(win).toLocaleLowerCase().indexOf("omarchylauncher") >= 0) continue
       const s = Menu.scoreAll(q, windowTitle(win), windowAppId(win), "")
-      if (s) scored.push({ s: s + 5, e: entryFromWin(win) })
+      if (s) scored.push({ s: s, e: entryFromWin(win) })
     }
-    scored.sort(function(a, b) { return b.s - a.s })
+    scored.sort(function(a, b) {
+      const ba = searchBand(a.s), bb = searchBand(b.s)
+      if (ba !== bb) return ba - bb
+      const ta = searchTier(a.e), tb = searchTier(b.e)
+      if (ta !== tb) return ta - tb
+      return b.s - a.s
+    })
     searchCache = scored.slice(0, 60).map(function(x) { return x.e })
   }
 

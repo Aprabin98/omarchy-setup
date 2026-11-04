@@ -7,7 +7,7 @@ A native Quickshell radial launcher for Omarchy on Hyprland, styled after the Vi
 - Reads Omarchy's stock `omarchy-menu.jsonc` and merges the user's `~/.config/omarchy/extensions/omarchy-menu.jsonc` overrides.
 - Evaluates menu `when` conditions so unavailable actions, such as Hibernate on a machine without hibernation, stay hidden.
 - Runs ordinary menu actions directly and hands dynamic provider entries, such as generated font or language choices, to `omarchy-menu summon`.
-- Searches menu actions, installed applications, and open windows together, ranking the best matches first.
+- Searches installed applications, open windows, and menu actions together. Results are grouped by source: apps first, then open windows, then app settings and management entries, then the rest of the system; direct matches always come before fuzzy-only matches, and the best match wins inside each group.
 - Uses installed desktop entries and system icons for applications, and Quickshell's Hyprland integration for open windows.
 - Supports mouse selection, keyboard navigation, numbered slots, and paging through long menus.
 - Reads Omarchy theme colors and shell color overrides. User preferences can override colors and layout in the launcher config.

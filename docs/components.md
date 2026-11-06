@@ -20,9 +20,9 @@ Source: `projects/youtube-music/`; `config/omarchy/plugins/damir.ytmusic/` alias
 
 Patro and the personal system monitor are stored under `config/omarchy/plugins/` because they are enabled in the active bar layout. Their plugin READMEs or manifests describe use and dependencies.
 
-## SDDM theme draft
+## Personal SDDM theme
 
-`projects/omarchy-official-sddm/` is an incomplete prototype, not part of setup installation. Its README lists missing dependencies and required work. Do not deploy it until it has a complete theme package and a reviewed install/removal path.
+`projects/omarchy-official-sddm/` is a complete Qt 6 theme matching the inactivity lock screen layout. Follow its README to preview, install, and remove it. SDDM themes and settings are system-wide, so this theme is not installed by `omarchy-setup`; the setup command never writes to `/usr/share/sddm/` or `/etc/sddm.conf.d/`.
 
 ## Host-specific HDMI audio switch
 

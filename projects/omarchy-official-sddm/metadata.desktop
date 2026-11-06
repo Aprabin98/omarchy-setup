@@ -1,0 +1,11 @@
+[SddmGreeterTheme]
+Name=Omarchy Personal
+Description=Personal Omarchy startup login theme matching the inactivity lock screen
+Author=Aprabin98
+Copyright=Copyright (C) 2026 Aprabin98
+Type=sddm-theme
+Version=1.0
+Website=https://github.com/Aprabin98/omarchy-setup
+MainScript=Main.qml
+ConfigFile=theme.conf
+QtVersion=6

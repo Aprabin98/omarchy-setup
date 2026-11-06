@@ -58,7 +58,7 @@ To manage one config file or directory, use `config:<path>` relative to `config/
 ## What's here
 
 - `config/` — portable Hyprland, Omarchy shell, plugin, launcher, and terminal configuration.
-- `projects/` — the Vice City launcher, YouTube Music plugin, and preserved SDDM draft.
+- `projects/` — the Vice City launcher, YouTube Music plugin, and personal SDDM theme. The theme has a documented system-wide install; `omarchy-setup` leaves SDDM and `/usr/share/sddm/themes/` untouched.
 - `hosts/omarchy/` — optional monitor and HDMI audio settings for this machine.
 - `system/omarchy/` — retained lock-screen overlay source. The installer does not replace package-owned files under `/usr/share/omarchy/`.
 - `current-theme.txt` — the current theme preference, Solitude. Apply it manually with `omarchy theme set "$(cat current-theme.txt)"` if wanted.

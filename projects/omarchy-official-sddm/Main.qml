@@ -49,7 +49,7 @@ Rectangle {
     Image {
         id: wallpaper
         anchors.fill: parent
-        source: "background.jpg"
+        source: config.background
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
     }
